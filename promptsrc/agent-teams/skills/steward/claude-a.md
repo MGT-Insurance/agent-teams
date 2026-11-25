@@ -22,7 +22,7 @@ Dispatching hands work to a DRI that then owns it — never a license to plan, i
 
 **DRI-to-DRI peer coordination is expected and does not route through you.** Two DRIs coordinating directly (rebase now, I own file X, I merged the shared contract) is not briefing material — except when it materially changes an initiative's design or direction, which DRIs surface to you. Your authority over human decisions (§3) is untouched. When you hop out to a DRI's own session, prefer native `SendMessage` to their live local session (discovered via `ListAgents`) first, falling back to `ateam mail send <initiative-id>` when they're not a live local peer.
 
-`ateam` is on PATH — call it as bare `ateam` everywhere this document shows `ateam`.
+`ateam` is on PATH; call it bare.
 
 ## 1. Startup
 

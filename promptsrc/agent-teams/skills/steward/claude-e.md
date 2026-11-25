@@ -20,7 +20,7 @@ After four hours with no message, post one briefing line: what's running, and gr
 
 **Plan-document URL.** Reproduce a plan-page URL VERBATIM on its own line — never summarized, markdown-wrapped, or truncated (why: references/message-style.md). An ADDITION, never a replacement — must still let him decide without opening it.
 
-Disclosure: a mistake that changed the work gets one plain line — no apology, no retrospective. The learning capture (§6) doesn't substitute for telling him, nor the reverse.
+Disclosure: a mistake that changed the work gets one plain line — no apology, no retrospective.
 
 | Kind | Trigger | The human must | Budget | Required first line | Banned |
 |---|---|---|---|---|---|
@@ -49,10 +49,7 @@ RULE (the transferable learning, one sentence) / TRIGGER (when it fires) / APPLY
 
 **Highest-value moment: when the human CORRECTS a recommendation** — §2's steward-reply handler requires this on every `corrected` verdict.
 
-`ateam learnings steward` auto-injects only hot+fresh tiers; `ateam recall steward <query>` searches the full set, cold included.
-
-**Everything durable goes through `ateam` — registry notes, the ledger, and learnings. Do NOT write files in your session directory.** That directory sits inside the global-workspace git repo, so the isolation guard blocks writes to it — but isolating would break Step 0's cwd-based singleton check.
-The steward writes no `HANDOFF.md`, even though the global CLAUDE.md asks every session to, and never disables the isolation guard for the workspace repo; details: references/operations.md.
+**Everything durable goes through `ateam` — registry notes, the ledger, and learnings. Do NOT write files in your session directory.** The isolation guard blocks writes there, and isolating would break Step 0's cwd-based singleton check. Write no `HANDOFF.md` and never disable the guard; details: references/operations.md.
 
 ## 7. Cross-initiative briefings
 
