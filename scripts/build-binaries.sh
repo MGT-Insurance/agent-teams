@@ -7,6 +7,8 @@ set -eu
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLAUDE_OUT="$REPO_ROOT/plugins/agent-teams/bin"
 CODEX_OUT="$REPO_ROOT/plugins/agent-teams-codex/bin"
+VERSION="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO_ROOT/plugins/agent-teams/.claude-plugin/plugin.json" | head -n 1)"
+[ -n "$VERSION" ] || { echo "cannot read plugin version" >&2; exit 1; }
 mkdir -p "$CLAUDE_OUT" "$CODEX_OUT"
 
 build() {
@@ -16,7 +18,7 @@ build() {
     dest="$CLAUDE_OUT/$name"
     printf 'building %s ...\n' "$name"
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-        go build -C "$REPO_ROOT" -trimpath -buildvcs=false -ldflags='-buildid=' \
+        go build -C "$REPO_ROOT" -trimpath -buildvcs=false -ldflags="-buildid= -X main.version=$VERSION" \
         -o "$dest" ./cmd/ateam
     chmod +x "$dest"
     cp -f "$dest" "$CODEX_OUT/$name"

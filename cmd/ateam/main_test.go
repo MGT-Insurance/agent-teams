@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,5 +154,28 @@ func TestRunSetupCodexPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
 		if !strings.Contains(string(body), distinctiveRules[role]) {
 			t.Fatalf("installed %s definition missing %q", role, distinctiveRules[role])
 		}
+	}
+}
+
+// TestRunVersionFlag checks that --version prints the version and exits 0
+// before the bd/workspace guards.
+func TestRunVersionFlag(t *testing.T) {
+	t.Setenv("PATH", "")
+	t.Setenv("AGENT_TEAMS_HOME", t.TempDir())
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	code := run([]string{"--version"})
+	os.Stdout = orig
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if code != 0 {
+		t.Errorf("run([--version]) = %d, want 0", code)
+	}
+	if got := strings.TrimSpace(string(out)); got != version {
+		t.Errorf("output = %q, want %q", got, version)
 	}
 }

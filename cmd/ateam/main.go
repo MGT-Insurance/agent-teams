@@ -27,6 +27,10 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+// version is stamped at build time via -ldflags "-X main.version=..." by
+// scripts/build-binaries.sh (from the plugin manifest); "dev" for plain go build.
+var version = "dev"
+
 func run(args []string) int {
 	stderr := os.Stderr
 	stdout := os.Stdout
@@ -41,6 +45,12 @@ func run(args []string) int {
 	// "help" as the first token → treat as --help (top-level help).
 	if args[0] == "help" {
 		return runHelp(nil, stdout, stderr)
+	}
+
+	// --version prints the build version and exits 0 before any guard.
+	if len(args) == 1 && args[0] == "--version" {
+		fmt.Fprintln(stdout, version)
+		return 0
 	}
 
 	home := workspace.Home()
