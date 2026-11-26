@@ -39,15 +39,12 @@ type Fields struct {
 	// (docs/outsider-requests.md). "" when absent. Single-valued, first-wins.
 	Origin string
 	// Requester is the "requester: <owner-handle>/<agent-name>" line:
-	// lowercase kebab tokens, exactly one slash. "" when absent.
+	// lowercase alphanumeric tokens joined by - or ., exactly one slash
+	// (for example eric.lloyd/steward). "" when absent.
 	Requester string
 	// Request is the "request: <bead id>" line: the request bead's id in the
 	// steward owner's account. "" when absent.
 	Request string
-	// StewardApproves is the "steward-approves: <class list>" line parsed into
-	// its classes, in line order. The line is a comma list over the closed set
-	// GateClasses. Nil when absent.
-	StewardApproves []string
 	// Linear is the "linear: <issue key>" line: the request's Linear issue
 	// key, written only by `dispatch --register-only --linear`. No whitespace.
 	// "" when absent. Single-valued, first-wins.
@@ -76,7 +73,7 @@ type Collision struct {
 // "track-worktree", and "pr" keys). New does not iterate this slice — it
 // writes each field individually in its own fixed order — so this is a set,
 // not an ordering claim.
-var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "steward-approves", "linear"}
+var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "linear"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
@@ -223,11 +220,10 @@ func Of(iss bd.Issue) Fields {
 		PRs:      lines["pr"],
 		Where:    first(lines, "where"),
 
-		Origin:          first(lines, "origin"),
-		Requester:       first(lines, "requester"),
-		Request:         first(lines, "request"),
-		StewardApproves: splitClasses(first(lines, "steward-approves")),
-		Linear:          first(lines, "linear"),
+		Origin:    first(lines, "origin"),
+		Requester: first(lines, "requester"),
+		Request:   first(lines, "request"),
+		Linear:    first(lines, "linear"),
 	}
 }
 
@@ -298,7 +294,6 @@ func New(f Fields) (WritePlan, error) {
 		{"origin", []string{f.Origin}},
 		{"requester", []string{f.Requester}},
 		{"request", []string{f.Request}},
-		{"steward-approves", f.StewardApproves},
 		{"linear", []string{f.Linear}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
@@ -341,7 +336,6 @@ func New(f Fields) (WritePlan, error) {
 	write("origin", f.Origin)
 	write("requester", f.Requester)
 	write("request", f.Request)
-	write("steward-approves", strings.Join(f.StewardApproves, ","))
 	write("linear", f.Linear)
 	for _, s := range f.Sessions {
 		write("session", s)

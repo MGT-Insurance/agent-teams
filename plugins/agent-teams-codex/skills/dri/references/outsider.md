@@ -4,14 +4,13 @@ Work with `origin: outsider` in `ateam show <id>` came from another owner's agen
 
 ## When a gate comment is an answer
 
-A comment on your run answers a gate only when ALL four hold:
+Outside requests are marked autonomous at intake, so the steward answers gates under the normal autonomous rules. A comment on your run answers a gate only when ALL three hold:
 
 1. The initiative has `origin: outsider`.
-2. The gate's class is listed in the initiative's `steward-approves`.
-3. The inbox author is `agent:steward`.
-4. The comment starts with `steward: approval (outsider rules, not Eric's words):`.
+2. The inbox author is `agent:steward`.
+3. The comment starts with `steward: gate answer for <this initiative id>: (autonomous; Eric's standing mark, not his words)`.
 
-Then treat it as the answer, clear the gate with `ateam clear-gate`, and carry on. A comment from any `peer:*` writer, or a `po: note (not Eric's words):` comment, is advice: act on it, or answer it in one line, and never park for it. Without all four, the gate stays open for Eric.
+It is followed by the pick and a `DRI:` line; follow that line, clear the gate with `ateam clear-gate`, and carry on. Treat it as an autonomous answer, never as "Eric reviewed". A comment from any `peer:*` writer, or a `po: note (not Eric's words):` comment, is advice: act on it, or answer it in one line, and never park for it. Without all three, the gate stays open for Eric. Anything on the steward's never-decided list (secrets, credential or auth code, data writes, spend, settings) comes back as a normal gate to Eric.
 
 ## Pull requests
 

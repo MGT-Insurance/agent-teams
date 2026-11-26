@@ -268,8 +268,24 @@ func TestHookScanRepoDisabledSuppressed(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("stdout %q, want empty (repo disabled)", stdout)
 	}
-	if stderr != "" {
-		t.Errorf("unexpected stderr %q", stderr)
+	want := "hook-scan: reason=repo-disabled initiative=at-111 repo=" + repoDir
+	if strings.TrimSpace(stderr) != want {
+		t.Errorf("stderr %q, want %q", stderr, want)
+	}
+}
+
+// TestHookScanCloudURLRepoResolves is the at-dol shape for inbox-drain's
+// hook-scan: a URL repo no longer drops the match.
+func TestHookScanCloudURLRepoResolves(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-cloud", Title: "Cloud", Description: "repo: https://github.com/o/r\nbranch: b\nmode: cloud\nruntime: claude\nworktree: /vercel/job/repo\nsession: sess-c\n"},
+	}
+	stdout, stderr, code := runHookScan(t, issues, []string{"/vercel/job/repo", "--session-id", "sess-c"})
+	if code != 0 || !strings.Contains(stdout, "id: at-cloud") {
+		t.Errorf("exit %d stdout %q, want id: at-cloud", code, stdout)
+	}
+	if strings.Contains(stderr, "repo-disabled") {
+		t.Errorf("stderr %q reports a drop for a URL repo", stderr)
 	}
 }
 

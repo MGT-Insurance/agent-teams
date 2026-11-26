@@ -19,14 +19,16 @@ initiative without them reads exactly as before.
 | key | value |
 | --- | --- |
 | `origin` | `outsider`. The only accepted value. |
-| `requester` | `<owner-handle>/<agent-name>`: lowercase kebab tokens, exactly one slash. |
+| `requester` | `<owner-handle>/<agent-name>`: lowercase alphanumeric tokens joined by `-` or `.`, exactly one slash (for example `eric.lloyd/steward`, `joe.b/scout-2`); no leading, trailing, or doubled separator. |
 | `request` | the request bead's id in Eric's account. |
-| `steward-approves` | comma list over the CLOSED class set `plan, scope, design-fork, live-test, delivery`. |
-| `linear` | optional: the request's Linear issue key, no whitespace. Written only by `dispatch --register-only --linear <key>` (valid only with the four outsider flags). |
+| `linear` | optional: the request's Linear issue key, no whitespace. Written only by `dispatch --register-only --linear <key>` (valid only with the three outsider flags `--origin`, `--requester`, `--request`, given together). |
 
-`initiative.New` rejects an unknown origin, a malformed requester and a class
-outside the closed set. `initiative.Of` never
-rejects stored data.
+`initiative.New` rejects an unknown origin and a malformed requester.
+`initiative.Of` never rejects stored data. AMENDED (agent-teams-eyk): the
+`steward-approves` field is removed; a legacy stored `steward-approves:` line
+is tolerated and ignored. Outside requests are marked autonomous at intake by
+the Dispatcher steward (its autonomous mark, not an initiative field), so the
+steward answers any gate under the normal autonomous rules.
 
 ## 2. Peer request and reply mail
 
@@ -61,10 +63,12 @@ Steward to requester:
 - `steward: accepted:`
 - `steward: denied: <code>:`
 - `steward: needs info` followed by a line `question:`
+- `steward: plan: <url>` (the plan page is published)
+- `steward: pr: <url>` (each PR, as it opens)
 
-Steward gate approval comments on a run (the DRI trust rule, section 9):
+Steward autonomous gate-answer comments on a run (the DRI trust rule, section 9):
 
-- `steward: approval (outsider rules, not Eric's words):`
+- `steward: gate answer for <initiative id>: (autonomous; Eric's standing mark, not his words)`, followed by the pick and a `DRI:` line the DRI follows.
 
 Steward close-out mail to the requester:
 
@@ -160,9 +164,16 @@ initiative fields and PR list; the line shapes above are frozen.)
 
 ## 9. Trust rule
 
-- The DRI treats a gate comment as an answer only when the initiative is
-  outsider, the gate's class is listed, the writer is `agent:steward`, and the
-  approval prefix from section 3 is present. A `peer:` writer is always advice.
+- On an `origin: outsider` initiative the DRI treats a gate comment as an
+  answer only when the writer is `agent:steward` and the comment starts with
+  `steward: gate answer for <this initiative id>: (autonomous; Eric's standing mark, not his words)`
+  (the Dispatcher steward's real autonomous answer prefix; it is followed by
+  the pick and a `DRI:` line the DRI follows).
+- It is an autonomous answer, never "Eric reviewed". A `peer:*` writer or a
+  `po: note` comment is always advice.
+- Anything on the steward's never-decided list (secrets, credential or auth
+  code, data writes, spend, settings) still comes back as a normal gate to
+  Eric.
 
 ## 10. Hard limits
 
