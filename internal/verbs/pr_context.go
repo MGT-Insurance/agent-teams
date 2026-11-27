@@ -23,9 +23,9 @@ type prContextKong struct {
 }
 
 const (
-	prContextOpen   = "<!-- a-team-context -->"
-	prContextClose  = "<!-- /a-team-context -->"
-	prContextReview = "Review: @jbarneson is required. PO comments are advice."
+	prContextOpen         = "<!-- a-team-context -->"
+	prContextClose        = "<!-- /a-team-context -->"
+	prContextReviewLegacy = "Review: @jbarneson is required. PO value checks are product input, never approvals."
 )
 
 var (
@@ -101,7 +101,7 @@ func (c *prContextKong) Run(ctx *cli.Context) error {
 		if only >= 0 && i != only {
 			continue
 		}
-		blocks = append(blocks, buildPRContextBlock(prs, i, outsider, ref, f.Requester, planURL, order))
+		blocks = append(blocks, buildPRContextBlock(prs, i, outsider, ref, f.Requester, f.Reviewer, planURL, order))
 	}
 	fmt.Fprint(ctx.Stdout, strings.Join(blocks, "\n"))
 	return nil
@@ -118,7 +118,7 @@ func prRefAndNumber(url string) (summary, number string) {
 
 // buildPRContextBlock renders the frozen block for prs[k]. Every line ends
 // with a newline.
-func buildPRContextBlock(prs []string, k int, outsider bool, ref, requester, planURL string, order []string) string {
+func buildPRContextBlock(prs []string, k int, outsider bool, ref, requester, reviewer, planURL string, order []string) string {
 	n := len(prs)
 	var b strings.Builder
 	b.WriteString(prContextOpen + "\n")
@@ -153,7 +153,11 @@ func buildPRContextBlock(prs []string, k int, outsider bool, ref, requester, pla
 		b.WriteString("Plan: " + planURL + "\n")
 	}
 	if outsider {
-		b.WriteString(prContextReview + "\n")
+		if reviewer != "" {
+			fmt.Fprintf(&b, "Review: @%s is requested. PO value checks are product input, never approvals.\n", reviewer)
+		} else {
+			b.WriteString(prContextReviewLegacy + "\n")
+		}
 	}
 	b.WriteString(prContextClose + "\n")
 	return b.String()

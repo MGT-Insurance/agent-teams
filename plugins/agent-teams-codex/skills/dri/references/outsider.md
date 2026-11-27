@@ -14,9 +14,9 @@ It is followed by the pick and a `DRI:` line; follow that line, clear the gate w
 
 ## Pull requests
 
-On every outside PR request Joe B as a REQUIRED REVIEWER: `gh pr create --reviewer jbarneson`. That is not a required approver. Eric's NORMAL merge bar applies unchanged; this adds no merge bar and Joe B's approval is never required.
+On every outside PR request the reviewer stored on the initiative (`reviewer:` in `ateam show <id>`), else Joe B, as a REQUIRED REVIEWER: `gh pr create --reviewer <login>` (`jbarneson` when none is stored). That is not a required approver. Eric's NORMAL merge bar applies unchanged; this adds no merge bar and the reviewer's approval is never required.
 
-If the reviewer is silent: @-mention him on the PR, then formally re-request review (`gh pr edit <n> --add-reviewer jbarneson`, and confirm with `gh pr view <n> --json reviewRequests`; an @-mention alone is not a re-request). One hour after both, with the other approvals and checks met, drop him: on Canary repos comment `@canary please drop @jbarneson: <reason>`, elsewhere use the repo's own way to remove a reviewer.
+If the reviewer is silent: @-mention them on the PR, then formally re-request review (`gh pr edit <n> --add-reviewer <login>`, and confirm with `gh pr view <n> --json reviewRequests`; an @-mention alone is not a re-request). One hour after both, with the other approvals and checks met, drop them: on Canary repos comment `@canary please drop @<login>: <reason>`, elsewhere use the repo's own way to remove a reviewer.
 
 ## Context block
 

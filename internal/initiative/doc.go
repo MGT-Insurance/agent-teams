@@ -65,7 +65,7 @@
 //
 // # Frozen item 3 — the field set is NOT closed
 //
-// [Fields] models seventeen fields (AMENDED for agent-teams-lrj, outsider
+// [Fields] models eighteen fields (AMENDED for agent-teams-9yj.18: the optional single-valued "reviewer" key joined as [Fields.Reviewer], a GitHub login valid only with origin: outsider, validated by [New] and never rejected by [Of]; AMENDED for agent-teams-lrj, outsider
 // requests: the single-valued "origin", "requester", "request",
 // and "linear" keys joined as [Fields.Origin], [Fields.Requester],
 // [Fields.Request], and [Fields.Linear]; requester grammar (lowercase alphanumeric
@@ -137,7 +137,7 @@
 //	    Where    string
 //	    Origin, Requester, Request string
 //
-// //	    Linear string
+// //	    Linear, Reviewer string
 //
 //	}
 //

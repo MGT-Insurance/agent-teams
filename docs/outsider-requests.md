@@ -22,8 +22,10 @@ initiative without them reads exactly as before.
 | `requester` | `<owner-handle>/<agent-name>`: lowercase alphanumeric tokens joined by `-` or `.`, exactly one slash (for example `eric.lloyd/steward`, `joe.b/scout-2`); no leading, trailing, or doubled separator. |
 | `request` | the request bead's id in Eric's account. |
 | `linear` | optional: the request's Linear issue key, no whitespace. Written only by `dispatch --register-only --linear <key>` (valid only with the three outsider flags `--origin`, `--requester`, `--request`, given together). |
+| `reviewer` | optional: the GitHub login the DRI requests for review on this request's PRs. GitHub login shape: alphanumeric or single hyphens, at most 39 chars, no leading or trailing hyphen. Valid only with `origin: outsider`. Written only by `dispatch --register-only --reviewer <login>` (valid only with the three outsider flags). Absent means the legacy Joe B rule (section 6). |
 
-`initiative.New` rejects an unknown origin and a malformed requester.
+`initiative.New` rejects an unknown origin, a malformed requester, and a
+malformed `reviewer` (or one without `origin: outsider`).
 `initiative.Of` never rejects stored data. AMENDED (agent-teams-eyk): the
 `steward-approves` field is removed; a legacy stored `steward-approves:` line
 is tolerated and ignored. Outside requests are marked autonomous at intake by
@@ -42,12 +44,16 @@ text.
 ```
 repo: <repo name>
 linear: <issue key>            (optional)
+reviewer: <github login>       (optional)
 done-when: <one line>
 ---
 <free text: the ask>
 ```
 
-Header keys are exactly `repo`, `linear`, `done-when`. Reply mail from the
+Header keys are exactly `repo`, `linear`, `reviewer`, `done-when`. `reviewer`
+is optional; the steward accepts it only when it equals the requester owner's
+own GitHub login (Dispatcher-known, unverified here), else it drops it. The
+Dispatcher `peer_send` shape check must accept this header (handoff bead). Reply mail from the
 steward is a mail bead (peer type `mail`) whose body starts with one of the
 prefixes in section 3.
 
@@ -96,8 +102,11 @@ the ledger as category `po-question`.
 
 ## 6. Reviewer rule and PR context
 
-On every outsider PR the DRI requests Joe B (`jbarneson`) as a REQUIRED
-REVIEWER (`gh pr create --reviewer jbarneson`). A required reviewer is not a
+On every outsider PR the DRI requests the initiative's stored `reviewer` (section 1)
+as a REQUIRED REVIEWER (`gh pr create --reviewer <login>`). An initiative with no
+`reviewer` field (older work, or a request that carried none) keeps Joe B
+(`jbarneson`) as the reviewer (`gh pr create --reviewer jbarneson`); the rest of
+this section reads the same for either login. A required reviewer is not a
 required approver and can be dropped. Eric's NORMAL merge bar applies
 unchanged. Silent-reviewer rule: the DRI @-mentions him on the PR and formally
 re-requests review (`gh pr edit <n> --add-reviewer jbarneson`, then confirms
@@ -116,9 +125,13 @@ Part <k> of <n> for the request <request-ref> (asked by <requester>).
 This PR: <this-summary>. The other PR (#<number>): <other-summary>.
 Merge order: <merge-order>
 Plan: <plan-url>
-Review: @jbarneson is required. PO comments are advice.
+Review: @<reviewer> is requested. PO value checks are product input, never approvals.
 <!-- /a-team-context -->
 ```
+
+The `Review:` line names the stored reviewer as above; without a stored
+`reviewer` it is the legacy line `Review: @jbarneson is required. PO value checks
+are product input, never approvals.`
 
 `<request-ref>` is `on Linear <key>` when the request carries a `linear:`
 header (recorded as the `linear` initiative field, section 1), else `<request bead id>`.
