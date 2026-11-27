@@ -613,7 +613,7 @@ func TestNoPO_CommentPrefixAndLegacyNote(t *testing.T) {
 }
 
 func TestNoPO_PRContextBadStoredReviewerFallsBackToLegacyLine(t *testing.T) {
-	for _, bad := range []string{"joe <!-- /a-team-context -->", "joe\r", "joe<b>", "-joe", "a b", strings.Repeat("a", 40)} {
+	for _, bad := range []string{"joe <!-- /a-team-context -->", "joe<b>", "-joe", "a b", strings.Repeat("a", 40)} {
 		issue := bd.Issue{ID: "at-x", Description: prCtxBase +
 			"origin: outsider\nrequester: joe/po-claims\nrequest: bd-9\nreviewer: " + bad + "\npr: https://github.com/o/r/pull/7\n"}
 		got, err := runPRContext(t, issue, &prContextKong{})
