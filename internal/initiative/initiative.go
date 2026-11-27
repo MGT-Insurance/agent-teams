@@ -49,6 +49,11 @@ type Fields struct {
 	// key, written only by `dispatch --register-only --linear`. No whitespace.
 	// "" when absent. Single-valued, first-wins.
 	Linear string
+	// Reviewer is the "reviewer: <github login>" line: the GitHub login the
+	// DRI requests for review on outsider PRs. Valid only with origin:
+	// outsider. "" when absent, which keeps the legacy Joe B reviewer.
+	// Single-valued, first-wins.
+	Reviewer string
 }
 
 // WritePlan is the result of composing or extending a description. Today
@@ -73,7 +78,7 @@ type Collision struct {
 // "track-worktree", and "pr" keys). New does not iterate this slice — it
 // writes each field individually in its own fixed order — so this is a set,
 // not an ordering claim.
-var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "linear"}
+var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "linear", "reviewer"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
@@ -224,6 +229,7 @@ func Of(iss bd.Issue) Fields {
 		Requester: first(lines, "requester"),
 		Request:   first(lines, "request"),
 		Linear:    first(lines, "linear"),
+		Reviewer:  first(lines, "reviewer"),
 	}
 }
 
@@ -295,6 +301,7 @@ func New(f Fields) (WritePlan, error) {
 		{"requester", []string{f.Requester}},
 		{"request", []string{f.Request}},
 		{"linear", []string{f.Linear}},
+		{"reviewer", []string{f.Reviewer}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
 		{"pr", f.PRs},
@@ -337,6 +344,7 @@ func New(f Fields) (WritePlan, error) {
 	write("requester", f.Requester)
 	write("request", f.Request)
 	write("linear", f.Linear)
+	write("reviewer", f.Reviewer)
 	for _, s := range f.Sessions {
 		write("session", s)
 	}
