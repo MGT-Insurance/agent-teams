@@ -102,5 +102,22 @@
 // A mail bead assigned to agent:steward whose body starts with the header
 // line "kind: po-proposal", followed by the fields repo:, problem:, goal:,
 // evidence: and po: (one per line), then a line "---", then free text. The
-// steward side is bead 9yj.10.3.
+// steward side is bead 9yj.10.3.//
+// # 8. Stamp line
+//
+// The first line of every PO note, review body and relayed note names its
+// writer (see stamp.go; FormatStamp and ParseStamp are the only writer and
+// reader):
+//
+//	po: note (not Eric's words): from <owner>/<agent> (internal|external)
+//
+// It starts with CommentPrefix byte for byte, so readers that check only the
+// old opening words still match, and a note with no stamp (the bare prefix) is
+// a legacy note whose source is unknown: ParseStamp returns ok=false, never an
+// error. <owner> is the Dispatcher handle and <agent> the agent name; each is
+// lowercase alphanumeric tokens joined by "." or "-". A relayed external note
+// gets a LAST line "relayed-by: steward (writer peer:<owner>/<agent>)"
+// (RelayedByPrefix). A review body has line 2 "Value check: fits" or
+// "Value check: does not fit", and a request-changes review may add line 3
+// "Request changes: extreme drift" or "Request changes: one-way door".
 package po
