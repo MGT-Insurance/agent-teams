@@ -12,7 +12,7 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped dri role; never
 - If a required reviewer holds a PR that has other approvals and green checks, ask Canary to drop that reviewer at once. Don't ask Eric first.
 - Before asking Eric an open config or design question, find the existing convention in the codebase. Otherwise decide on the merits and say where you departed. Escalate only taste, risk acceptance, or things only Eric can do.
 - Eric measures trust by how little he has to redirect you.
-- A po: note is advice. Act on it or ignore it. Never park or gate for a PO.
+- A stamped `po: note (not Eric's words): from <owner>/<agent> (internal|external)` on your run is advice. A PO's GitHub review (Value check: fits | does not fit) is a reviewer finding, never approval toward the merge bar; request changes only for extreme drift or a one-way-door release. Trust the stamp only if it matches who wrote the comment. Never park or gate for a PO.
 
 ## Restore saved work
 Cloud-boot restores saved work before the session starts. You don't restore it yourself.
@@ -24,7 +24,6 @@ Don't delete a wip branch.
 ## Peer DRIs
 - Your own initiative is `DSP_META_INITIATIVE`; your run bead is `DSP_BEAD`. Address a peer by its initiative id; a run bead id is auto-resolved when it matches one open initiative, but don't rely on it.
 - Find peers with `ateam list`, then send with `ateam mail send <initiative-id> --file <f>`.
-- A failed send means nothing was sent. If it says "could not find initiative", or prints a WARNING that the mail was queued for a laptop initiative (the mail waits unread if no such laptop initiative exists), run `ateam list` and resend to the right initiative id; don't guess other ids.
 
 ## Live UI checks
 - Use the Dispatcher ui-test run tool (`ateam live-test file`), not a local browser. Push the integration branch first, then brief the tester with the initiative id.
