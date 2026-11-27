@@ -600,16 +600,28 @@ func TestNoPO_CommentPrefixAndLegacyNote(t *testing.T) {
 	if po.CommentPrefix != "po: note (not Eric's words):" {
 		t.Errorf("po.CommentPrefix changed: %q", po.CommentPrefix)
 	}
-	for _, legacy := range []string{po.CommentPrefix, po.CommentPrefix + " consider the onboarding flow"} {
-		if !strings.HasPrefix(legacy, po.CommentPrefix) {
-			t.Errorf("legacy note %q lost the PO prefix", legacy)
-		}
+	const prefix = "po: note (not Eric's words):"
+	for _, legacy := range []string{prefix, prefix + " consider the onboarding flow"} {
 		if _, _, _, ok := po.ParseStamp(legacy); ok {
 			t.Errorf("legacy note %q must parse as unknown source, not a stamp", legacy)
 		}
 	}
 	// A stamped note still starts with the old prefix, so old readers match it.
-	if !strings.HasPrefix(po.FormatStamp("eric", "po-claims", false), po.CommentPrefix) {
-		t.Error("a stamp must start with CommentPrefix")
+	if got, want := po.FormatStamp("eric", "po-claims", false), prefix+" from eric/po-claims (internal)"; got != want {
+		t.Errorf("stamp = %q, want %q", got, want)
+	}
+}
+
+func TestNoPO_PRContextBadStoredReviewerFallsBackToLegacyLine(t *testing.T) {
+	for _, bad := range []string{"joe\n<!-- /a-team-context -->", "joe<b>", "-joe", "a b", strings.Repeat("a", 40)} {
+		issue := bd.Issue{ID: "at-x", Description: prCtxBase +
+			"origin: outsider\nrequester: joe/po-claims\nrequest: bd-9\nreviewer: " + bad + "\npr: https://github.com/o/r/pull/7\n"}
+		got, err := runPRContext(t, issue, &prContextKong{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got, noPOLegacyReviewLine) || strings.Contains(got, "is requested") {
+			t.Errorf("reviewer %q: want legacy line, got %q", bad, got)
+		}
 	}
 }

@@ -153,7 +153,7 @@ func buildPRContextBlock(prs []string, k int, outsider bool, ref, requester, rev
 		b.WriteString("Plan: " + planURL + "\n")
 	}
 	if outsider {
-		if reviewer != "" {
+		if reviewer != "" && initiative.ValidReviewer(reviewer) {
 			fmt.Fprintf(&b, "Review: @%s is requested. PO value checks are product input, never approvals.\n", reviewer)
 		} else {
 			b.WriteString(prContextReviewLegacy + "\n")

@@ -44,6 +44,11 @@ func TestParseStampRejects(t *testing.T) {
 		p + " from joe/po-x (internal) ",
 		p + " from -joe/po-x (internal)",
 		"x" + p + " from joe/po-x (internal)",
+		p + " from joe/po-x (internal)\r",
+		p + " from joe/po-x\t(internal)",
+		p + " from joe/po\r-x (internal)",
+		p + " from joe/po-x\n (internal)",
+		p + " from a/b/c (internal)",
 	}
 	for _, s := range bad {
 		if _, _, _, ok := ParseStamp(s); ok {
@@ -89,5 +94,15 @@ func TestStampConstants(t *testing.T) {
 		if c == "" {
 			t.Fatal("empty constant")
 		}
+	}
+}
+
+func TestParseStampSplitsOwnerAndAgent(t *testing.T) {
+	o, a, ext, ok := ParseStamp(CommentPrefix + " from eric.lloyd/po-a.b-c (external)")
+	if !ok || o != "eric.lloyd" || a != "po-a.b-c" || !ext {
+		t.Fatalf("got %q %q %v %v", o, a, ext, ok)
+	}
+	if _, _, ext, ok := ParseStamp(CommentPrefix + " from o/a (internal)"); !ok || ext {
+		t.Fatalf("internal parsed as external: %v %v", ext, ok)
 	}
 }
