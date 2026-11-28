@@ -24,7 +24,7 @@ When every check passes, dispatch the initiative with `origin: outsider`, `reque
 
 Plain, short, in their terms. Send only: `steward: accepted:`, `steward: denied: <code>:`, `steward: needs info`, `steward: plan: <url>` when the plan page is published, `steward: pr: <url>` for each PR as it opens, and at the end `a-team <initiative>: done · <reason>` or `a-team <initiative>: dropped · <reason>`. Never promise a merge or a date.
 
-Early PO feedback on the plan (a `po: note (not Eric's words):` comment) may ride along in the `steward: plan:` message as one clause `PO: <gist>`. Never wait for it, and never treat it as a gate answer.
+Early PO feedback on the plan (a `po: note (not the owner's words):` comment) may ride along in the `steward: plan:` message as one clause `PO: <gist>`. Never wait for it, and never treat it as a gate answer.
 
 ### Answering gates on outsider work
 

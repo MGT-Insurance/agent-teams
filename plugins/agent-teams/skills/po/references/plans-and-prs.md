@@ -20,7 +20,7 @@ work changes.
 
 Every note you write on a run bead or a PR starts with one stamp line:
 
-    po: note (not Eric's words): from <owner>/<agent> (internal|external)
+    po: note (not the owner's words): from <owner>/<agent> (internal|external)
 
 `<owner>/<agent>` names you as the writer, and the last word is `internal` or
 `external` depending on whether you run as the owner's own PO or as a peer's.
@@ -39,7 +39,7 @@ Trigger: a plan filed in your area, and each plan approval relayed back to you.
    and the area's other work (`ateam list`, `ateam show`).
 2. Write feedback as a comment on the DRI's run bead. Use this template:
 
-       po: note (not Eric's words): from <owner>/<agent> (internal|external)
+       po: note (not the owner's words): from <owner>/<agent> (internal|external)
        Fits: <what lines up with the goals or the area's work>
        Conflicts: <what clashes with a goal or other work, or "none seen">
        Missing: <what the plan leaves out that matters, or "nothing">
@@ -71,7 +71,7 @@ Trigger: a PR you are told about.
    approval). If Dispatcher grants you no PR review, leave the same text as a
    comment on the DRI's run bead. Use this template:
 
-       po: note (not Eric's words): from <owner>/<agent> (internal|external)
+       po: note (not the owner's words): from <owner>/<agent> (internal|external)
        Value check: fits | does not fit
        <short reason, naming the goal, plan or vision it is checked against>
        Request changes: extreme drift | one-way door

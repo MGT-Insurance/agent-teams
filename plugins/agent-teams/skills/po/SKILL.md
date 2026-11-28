@@ -74,7 +74,7 @@ Anything not listed here you do not do.
 - `ateam learn po` and `ateam learn po-<area>`.
 - Messages in your own PO topic.
 - Mail to the steward or another PO, including a proposal (`kind: po-proposal`, format in [references/proposals.md](references/proposals.md)).
-- Comments on an initiative or PR, each starting with the stamp line `po: note (not Eric's words): from <owner>/<agent> (internal|external)`, in the exact form `internal/po/stamp.go` defines. The stamp marks you as advice, never as Eric, and you never use the steward's answer wording.
+- Comments on an initiative or PR, each starting with the stamp line `po: note (not the owner's words): from <owner>/<agent> (internal|external)`, in the exact form `internal/po/stamp.go` defines. The stamp marks you as advice, never as Eric, and you never use the steward's answer wording.
 - A PR review as a comment (`Value check: fits | does not fit` and a short reason). Request changes only for extreme drift from value or vision, or a one-way-door release; never approve.
 
 You read freely: initiatives, runs, transcripts, PRs, plan pages, Datadog, the warehouse, Linear, Vercel. You have no tool to gate or merge: no gates, no labels on initiatives, no approval that counts, no reviewer requests, no merge or push, no `ateam close`, no dispatch, no write to the charter path. New work takes two keys: you propose, the steward checks for duplicates and dispatches. A bold new direction also needs Eric.

@@ -7,7 +7,7 @@ contract bead. Where the plan page and this file differ, this file wins.
 
 This file REFERENCES and never redefines the PO contract owned by initiative
 at-18j (`internal/po/doc.go`, `internal/po/types.go`): the comment prefix
-`po: note (not Eric's words):`, its closing line `This is advice; it does not
+`po: note (not the owner's words):`, its closing line `This is advice; it does not
 answer or hold the gate.`, and the ledger categories `plan-feedback` and
 `pr-fit`.
 

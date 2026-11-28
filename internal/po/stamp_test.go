@@ -8,15 +8,15 @@ import (
 func TestStampRoundTrip(t *testing.T) {
 	for _, ext := range []bool{false, true} {
 		s := FormatStamp("eric.lloyd", "po-doors-of-durin", ext)
-		if !strings.HasPrefix(s, CommentPrefix) {
-			t.Fatalf("stamp %q lacks CommentPrefix", s)
+		if !strings.HasPrefix(s, NeutralCommentPrefix) {
+			t.Fatalf("stamp %q lacks NeutralCommentPrefix", s)
 		}
 		o, a, e, ok := ParseStamp(s)
 		if !ok || o != "eric.lloyd" || a != "po-doors-of-durin" || e != ext {
 			t.Fatalf("round trip ext=%v got %q %q %v %v", ext, o, a, e, ok)
 		}
 	}
-	want := "po: note (not Eric's words): from joe/po-x (external)"
+	want := "po: note (not the owner's words): from joe/po-x (external)"
 	if got := FormatStamp("joe", "po-x", true); got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -88,7 +88,7 @@ func TestFormatStampRefusesInjection(t *testing.T) {
 
 func TestStampConstants(t *testing.T) {
 	if CommentPrefix != "po: note (not Eric's words):" {
-		t.Fatal("CommentPrefix changed")
+		t.Fatal("legacy CommentPrefix changed")
 	}
 	for _, c := range []string{RelayedByPrefix, ValueCheckFits, ValueCheckDoesNotFit, RequestChangesDrift, RequestChangesOneWayDoor} {
 		if c == "" {
@@ -107,7 +107,7 @@ func TestParseStampSplitsOwnerAndAgent(t *testing.T) {
 	}
 }
 
-func TestNeutralPrefixParsesAndWriterKeepsOld(t *testing.T) {
+func TestNeutralPrefixParsesAndWriterEmitsNeutral(t *testing.T) {
 	if NeutralCommentPrefix != "po: note (not the owner's words):" {
 		t.Fatal("NeutralCommentPrefix changed")
 	}
@@ -118,8 +118,8 @@ func TestNeutralPrefixParsesAndWriterKeepsOld(t *testing.T) {
 	if _, _, _, ok := ParseStamp(CommentPrefix + " from o/a (internal)"); !ok {
 		t.Fatal("old prefix must still parse")
 	}
-	if got := FormatStamp("o", "a", false); !strings.HasPrefix(got, CommentPrefix) || strings.HasPrefix(got, NeutralCommentPrefix) {
-		t.Fatalf("writer must still emit the old prefix: %q", got)
+	if got := FormatStamp("o", "a", false); !strings.HasPrefix(got, NeutralCommentPrefix) || strings.HasPrefix(got, CommentPrefix) {
+		t.Fatalf("writer must emit the neutral prefix: %q", got)
 	}
 	if !HasCommentPrefix(NeutralCommentPrefix+" x") || !HasCommentPrefix(CommentPrefix+" x") || HasCommentPrefix("po: note") {
 		t.Fatal("HasCommentPrefix")

@@ -47,4 +47,4 @@ You never edit the charter. If Eric agrees to a new goal, signal, direction or f
 
 Run `ateam po charter check` on your draft before you open the pull request, and put the reasoning and evidence in the pull request text so it stands without the conversation. Record the draft in the ledger with category `charter-change`.
 
-A comment you leave on any pull request or initiative starts with the stamp line `po: note (not Eric's words): from <owner>/<agent> (internal|external)` (format in `plans-and-prs.md`) and is advice. A charter-change pull request is not blocked by anything you do, and you do not request review or approval on it from anyone but Eric.
+A comment you leave on any pull request or initiative starts with the stamp line `po: note (not the owner's words): from <owner>/<agent> (internal|external)` (format in `plans-and-prs.md`) and is advice. A charter-change pull request is not blocked by anything you do, and you do not request review or approval on it from anyone but Eric.

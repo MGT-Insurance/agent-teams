@@ -596,15 +596,18 @@ func TestNoPO_DispatchOutsiderRegisterOnlyNoReviewer(t *testing.T) {
 // and that a legacy (bare-prefix) note is still recognised as a PO note.
 func TestNoPO_CommentPrefixAndLegacyNote(t *testing.T) {
 	if po.CommentPrefix != "po: note (not Eric's words):" {
-		t.Errorf("po.CommentPrefix changed: %q", po.CommentPrefix)
+		t.Errorf("legacy po.CommentPrefix changed: %q", po.CommentPrefix)
 	}
-	const prefix = "po: note (not Eric's words):"
-	for _, legacy := range []string{prefix, prefix + " consider the onboarding flow"} {
+	const prefix = "po: note (not the owner's words):"
+	if po.NeutralCommentPrefix != prefix {
+		t.Errorf("po.NeutralCommentPrefix changed: %q", po.NeutralCommentPrefix)
+	}
+	for _, legacy := range []string{prefix, prefix + " consider the onboarding flow", po.CommentPrefix, po.CommentPrefix + " consider the onboarding flow"} {
 		if _, _, _, ok := po.ParseStamp(legacy); ok {
 			t.Errorf("legacy note %q must parse as unknown source, not a stamp", legacy)
 		}
 	}
-	// A stamped note still starts with the old prefix, so old readers match it.
+	// A stamped note starts with the neutral prefix.
 	if got, want := po.FormatStamp("eric", "po-claims", false), prefix+" from eric/po-claims (internal)"; got != want {
 		t.Errorf("stamp = %q, want %q", got, want)
 	}
