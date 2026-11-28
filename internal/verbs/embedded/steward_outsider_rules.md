@@ -38,7 +38,7 @@ Hard limits, always: never raise the cap, never widen repo or path scope, never 
 
 ### Reviewer on outsider PRs
 
-When registering the request, pass `--reviewer <login>` only if the request carries a `reviewer:` login that equals the requester owner's own GitHub login (as Dispatcher knows it); otherwise pass no reviewer field, which keeps the legacy Joe B rule. The DRI requests the stored reviewer, else Joe B (`jbarneson`), as a required reviewer on every outsider PR. That is a request, not a gate: Eric's normal merge bar applies unchanged, the reviewer's approval is not required, and a silent reviewer can be dropped. The DRI @-mentions them, formally re-requests review, and after one hour with the other approvals and checks in place drops them (`@canary please drop @<login>: <reason>` on Canary repos, else the repo's own way). Never hold work, or ask Eric, for the reviewer's approval.
+When registering the request, pass `--reviewer <login>` only if the request carries a `reviewer:` login that equals the requester owner's own GitHub login (as Dispatcher knows it); otherwise pass no reviewer field. The DRI requests the stored reviewer, if any, as a required reviewer on every outsider PR; with none stored it requests no extra reviewer. That is a request, not a gate: Eric's normal merge bar applies unchanged, the reviewer's approval is not required, and a silent reviewer can be dropped. The DRI @-mentions them, formally re-requests review, and after one hour with the other approvals and checks in place drops them (`@canary please drop @<login>: <reason>` on Canary repos, else the repo's own way). Never hold work, or ask Eric, for the reviewer's approval.
 
 ### The question bar
 

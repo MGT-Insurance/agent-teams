@@ -18,6 +18,10 @@ const (
 	StampKindInternal = "internal"
 	StampKindExternal = "external"
 
+	// NeutralCommentPrefix is the owner-neutral opening of a PO note. Readers
+	// accept it alongside CommentPrefix; writers still emit CommentPrefix.
+	NeutralCommentPrefix = "po: note (not the owner's words):"
+
 	// RelayedByPrefix starts the LAST line the steward adds when it copies an
 	// external note onto a run. Full line:
 	// "relayed-by: steward (writer peer:<owner>/<agent>)".
@@ -64,6 +68,9 @@ func FormatStamp(owner, agent string, external bool) string {
 func ParseStamp(line string) (owner, agent string, external bool, ok bool) {
 	rest, found := strings.CutPrefix(line, CommentPrefix+stampFrom)
 	if !found {
+		rest, found = strings.CutPrefix(line, NeutralCommentPrefix+stampFrom)
+	}
+	if !found {
 		return "", "", false, false
 	}
 	var kind string
@@ -81,4 +88,45 @@ func ParseStamp(line string) (owner, agent string, external bool, ok bool) {
 		return "", "", false, false
 	}
 	return o, a, kind == StampKindExternal, true
+}
+
+// HasCommentPrefix reports whether s opens with either accepted PO note prefix.
+func HasCommentPrefix(s string) bool {
+	return strings.HasPrefix(s, CommentPrefix) || strings.HasPrefix(s, NeutralCommentPrefix)
+}
+
+const (
+	relayedByOpen  = "relayed-by: "
+	relayedByWrite = " (writer peer:"
+)
+
+// FormatRelayedBy returns the relayed-by line for a relaying role, the writer's
+// owner and agent. It returns "" when any part is invalid.
+func FormatRelayedBy(role, owner, agent string) string {
+	if !ValidStampName(role) || !ValidStampName(owner) || !ValidStampName(agent) {
+		return ""
+	}
+	return relayedByOpen + role + relayedByWrite + owner + "/" + agent + ")"
+}
+
+// ParseRelayedBy parses a relayed-by line from any relaying role (the legacy
+// "steward" included). ok is false for anything not exactly well-formed.
+func ParseRelayedBy(line string) (role, owner, agent string, ok bool) {
+	rest, found := strings.CutPrefix(line, relayedByOpen)
+	if !found {
+		return "", "", "", false
+	}
+	role, rest, found = strings.Cut(rest, relayedByWrite)
+	if !found || !ValidStampName(role) {
+		return "", "", "", false
+	}
+	id, found := strings.CutSuffix(rest, ")")
+	if !found {
+		return "", "", "", false
+	}
+	o, a, cut := strings.Cut(id, "/")
+	if !cut || !ValidStampName(o) || !ValidStampName(a) {
+		return "", "", "", false
+	}
+	return role, o, a, true
 }

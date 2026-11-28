@@ -22,7 +22,7 @@ initiative without them reads exactly as before.
 | `requester` | `<owner-handle>/<agent-name>`: lowercase alphanumeric tokens joined by `-` or `.`, exactly one slash (for example `eric.lloyd/steward`, `joe.b/scout-2`); no leading, trailing, or doubled separator. |
 | `request` | the request bead's id in Eric's account. |
 | `linear` | optional: the request's Linear issue key, no whitespace. Written only by `dispatch --register-only --linear <key>` (valid only with the three outsider flags `--origin`, `--requester`, `--request`, given together). |
-| `reviewer` | optional: the GitHub login the DRI requests for review on this request's PRs. GitHub login shape: alphanumeric or single hyphens, at most 39 chars, no leading or trailing hyphen. Valid only with `origin: outsider`. Written only by `dispatch --register-only --reviewer <login>` (valid only with the three outsider flags). Absent means the legacy Joe B rule (section 6). |
+| `reviewer` | optional: the GitHub login the DRI requests for review on this request's PRs. GitHub login shape: alphanumeric or single hyphens, at most 39 chars, no leading or trailing hyphen. Valid only with `origin: outsider`. Written only by `dispatch --register-only --reviewer <login>` (valid only with the three outsider flags). Absent means no extra reviewer is requested (section 6). |
 
 `initiative.New` rejects an unknown origin, a malformed requester, and a
 malformed `reviewer` (or one without `origin: outsider`).
@@ -104,16 +104,14 @@ the ledger as category `po-question`.
 
 On every outsider PR the DRI requests the initiative's stored `reviewer` (section 1)
 as a REQUIRED REVIEWER (`gh pr create --reviewer <login>`). An initiative with no
-`reviewer` field (older work, or a request that carried none) keeps Joe B
-(`jbarneson`) as the reviewer (`gh pr create --reviewer jbarneson`); the rest of
-this section reads the same for either login. A required reviewer is not a
+`reviewer` field requests no extra reviewer, and the owner's normal merge bar applies. A required reviewer is not a
 required approver and can be dropped. Eric's NORMAL merge bar applies
-unchanged. Silent-reviewer rule: the DRI @-mentions him on the PR and formally
-re-requests review (`gh pr edit <n> --add-reviewer jbarneson`, then confirms
+unchanged. Silent-reviewer rule: the DRI @-mentions the reviewer on the PR and formally
+re-requests review (`gh pr edit <n> --add-reviewer <login>`, then confirms
 `gh pr view <n> --json reviewRequests`; an @-mention alone is not a
 re-request). One hour after both, with the other approvals and checks in
-place, the DRI drops him: on Canary repos with the PR comment
-`@canary please drop @jbarneson: <reason>`, elsewhere by the repo's own way
+place, the DRI drops the reviewer: on Canary repos with the PR comment
+`@canary please drop @<login>: <reason>`, elsewhere by the repo's own way
 to remove a reviewer.
 
 Multi-PR context block, at the top of each PR body between the markers,
@@ -129,9 +127,8 @@ Review: @<reviewer> is requested. PO value checks are product input, never appro
 <!-- /a-team-context -->
 ```
 
-The `Review:` line names the stored reviewer as above; without a stored
-`reviewer` it is the legacy line `Review: @jbarneson is required. PO value checks
-are product input, never approvals.`
+The `Review:` line names the stored reviewer as above; without a valid stored
+`reviewer`, or on a non-outsider initiative, no `Review:` line is printed.
 
 `<request-ref>` is `on Linear <key>` when the request carries a `linear:`
 header (recorded as the `linear` initiative field, section 1), else `<request bead id>`.

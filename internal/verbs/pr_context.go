@@ -23,9 +23,8 @@ type prContextKong struct {
 }
 
 const (
-	prContextOpen         = "<!-- a-team-context -->"
-	prContextClose        = "<!-- /a-team-context -->"
-	prContextReviewLegacy = "Review: @jbarneson is required. PO value checks are product input, never approvals."
+	prContextOpen  = "<!-- a-team-context -->"
+	prContextClose = "<!-- /a-team-context -->"
 )
 
 var (
@@ -155,8 +154,6 @@ func buildPRContextBlock(prs []string, k int, outsider bool, ref, requester, rev
 	if outsider {
 		if reviewer != "" && initiative.ValidReviewer(reviewer) {
 			fmt.Fprintf(&b, "Review: @%s is requested. PO value checks are product input, never approvals.\n", reviewer)
-		} else {
-			b.WriteString(prContextReviewLegacy + "\n")
 		}
 	}
 	b.WriteString(prContextClose + "\n")

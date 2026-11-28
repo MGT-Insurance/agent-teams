@@ -32,7 +32,6 @@ Part 1 of 2 for the request on Linear ENG-12 (asked by joe/po-claims).
 This PR: o/r#1. The other PR (#2): o/r#2.
 Merge order: o/r#1 then o/r#2
 Plan: https://dispatcher.example/pages/abc
-Review: @jbarneson is required. PO value checks are product input, never approvals.
 <!-- /a-team-context -->
 `
 	want2 := strings.NewReplacer("Part 1", "Part 2", "This PR: o/r#1. The other PR (#2): o/r#2.", "This PR: o/r#2. The other PR (#1): o/r#1.").Replace(want1)
@@ -117,18 +116,18 @@ func TestPRContext_ThreePRsOtherPRsSentence(t *testing.T) {
 	}
 }
 
-func TestPRContext_ReviewerNamedAndLegacyFallback(t *testing.T) {
+func TestPRContext_ReviewerNamedAndNoReviewerFallback(t *testing.T) {
 	base := prCtxBase + "origin: outsider\nrequester: joe/po\nrequest: bd-9\npr: https://github.com/o/r/pull/1\n"
 	got, err := runPRContext(t, bd.Issue{ID: "at-x", Description: base + "reviewer: some-user\n"}, &prContextKong{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "Review: @some-user is requested. PO value checks are product input, never approvals.\n") || strings.Contains(got, "jbarneson") {
+	if !strings.Contains(got, "Review: @some-user is requested. PO value checks are product input, never approvals.\n") {
 		t.Errorf("reviewer block:\n%s", got)
 	}
 	got, err = runPRContext(t, bd.Issue{ID: "at-x", Description: base}, &prContextKong{})
-	if err != nil || !strings.Contains(got, "Review: @jbarneson is required. PO value checks are product input, never approvals.\n") {
-		t.Errorf("legacy block: err=%v\n%s", err, got)
+	if err != nil || strings.Contains(got, "Review:") {
+		t.Errorf("no-reviewer block: err=%v\n%s", err, got)
 	}
 	got, _ = runPRContext(t, bd.Issue{ID: "at-x", Description: prCtxBase + "pr: https://github.com/o/r/pull/1\n"}, &prContextKong{})
 	if strings.Contains(got, "Review:") {

@@ -51,7 +51,7 @@ type Fields struct {
 	Linear string
 	// Reviewer is the "reviewer: <github login>" line: the GitHub login the
 	// DRI requests for review on outsider PRs. Valid only with origin:
-	// outsider. "" when absent, which keeps the legacy Joe B reviewer.
+	// outsider. "" when absent: no reviewer is requested.
 	// Single-valued, first-wins.
 	Reviewer string
 }

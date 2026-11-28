@@ -525,9 +525,8 @@ func noPOStripPoGroup(help string) string {
 //
 // With no PO and no --reviewer, the PR context block and the outsider dispatch
 // flow must be what they were before the optional reviewer field existed. The
-// only agreed wording change is the legacy Review line (below).
-
-const noPOLegacyReviewLine = "Review: @jbarneson is required. PO value checks are product input, never approvals.\n"
+// only agreed wording change is that no Review line is printed without a
+// valid stored reviewer.
 
 func TestNoPO_PRContextNonOutsiderHasNoReviewLine(t *testing.T) {
 	issue := bd.Issue{ID: "at-x", Description: prCtxBase + "pr: https://github.com/o/r/pull/7\n"}
@@ -546,7 +545,7 @@ func TestNoPO_PRContextNonOutsiderHasNoReviewLine(t *testing.T) {
 	}
 }
 
-func TestNoPO_PRContextOutsiderWithoutReviewerIsLegacyLine(t *testing.T) {
+func TestNoPO_PRContextOutsiderWithoutReviewerHasNoReviewLine(t *testing.T) {
 	issue := bd.Issue{ID: "at-x", Description: prCtxBase +
 		"origin: outsider\nrequester: joe/po-claims\nrequest: bd-9\npr: https://github.com/o/r/pull/7\n"}
 	got, err := runPRContext(t, issue, &prContextKong{})
@@ -556,7 +555,6 @@ func TestNoPO_PRContextOutsiderWithoutReviewerIsLegacyLine(t *testing.T) {
 	want := "<!-- a-team-context -->\n" +
 		"Part 1 of 1 for the request bd-9 (asked by joe/po-claims).\n" +
 		"This PR: o/r#7.\n" +
-		noPOLegacyReviewLine +
 		"<!-- /a-team-context -->\n"
 	if got != want {
 		t.Errorf("outsider context = %q, want %q", got, want)
@@ -612,7 +610,7 @@ func TestNoPO_CommentPrefixAndLegacyNote(t *testing.T) {
 	}
 }
 
-func TestNoPO_PRContextBadStoredReviewerFallsBackToLegacyLine(t *testing.T) {
+func TestNoPO_PRContextBadStoredReviewerPrintsNoReviewLine(t *testing.T) {
 	for _, bad := range []string{"joe <!-- /a-team-context -->", "joe<b>", "-joe", "a b", strings.Repeat("a", 40)} {
 		issue := bd.Issue{ID: "at-x", Description: prCtxBase +
 			"origin: outsider\nrequester: joe/po-claims\nrequest: bd-9\nreviewer: " + bad + "\npr: https://github.com/o/r/pull/7\n"}
@@ -620,8 +618,8 @@ func TestNoPO_PRContextBadStoredReviewerFallsBackToLegacyLine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(got, noPOLegacyReviewLine) || strings.Contains(got, "is requested") {
-			t.Errorf("reviewer %q: want legacy line, got %q", bad, got)
+		if strings.Contains(got, "Review:") {
+			t.Errorf("reviewer %q: want no Review line, got %q", bad, got)
 		}
 	}
 }
