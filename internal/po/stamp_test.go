@@ -106,3 +106,43 @@ func TestParseStampSplitsOwnerAndAgent(t *testing.T) {
 		t.Fatalf("internal parsed as external: %v %v", ext, ok)
 	}
 }
+
+func TestNeutralPrefixParsesAndWriterKeepsOld(t *testing.T) {
+	if NeutralCommentPrefix != "po: note (not the owner's words):" {
+		t.Fatal("NeutralCommentPrefix changed")
+	}
+	o, a, ext, ok := ParseStamp(NeutralCommentPrefix + " from eric.lloyd/po-a (external)")
+	if !ok || o != "eric.lloyd" || a != "po-a" || !ext {
+		t.Fatalf("neutral parse = %q %q %v %v", o, a, ext, ok)
+	}
+	if _, _, _, ok := ParseStamp(CommentPrefix + " from o/a (internal)"); !ok {
+		t.Fatal("old prefix must still parse")
+	}
+	if got := FormatStamp("o", "a", false); !strings.HasPrefix(got, CommentPrefix) || strings.HasPrefix(got, NeutralCommentPrefix) {
+		t.Fatalf("writer must still emit the old prefix: %q", got)
+	}
+	if !HasCommentPrefix(NeutralCommentPrefix+" x") || !HasCommentPrefix(CommentPrefix+" x") || HasCommentPrefix("po: note") {
+		t.Fatal("HasCommentPrefix")
+	}
+}
+
+func TestRelayedByAnyRole(t *testing.T) {
+	for _, role := range []string{"steward", "relay", "dri-2"} {
+		line := FormatRelayedBy(role, "eric.lloyd", "po-a")
+		r, o, a, ok := ParseRelayedBy(line)
+		if !ok || r != role || o != "eric.lloyd" || a != "po-a" {
+			t.Fatalf("role %q: %q -> %q %q %q %v", role, line, r, o, a, ok)
+		}
+	}
+	if got := FormatRelayedBy("steward", "o", "a"); got != RelayedByPrefix+"o/a)" {
+		t.Fatalf("legacy line mismatch: %q", got)
+	}
+	for _, bad := range []string{"", "relayed-by: (writer peer:o/a)", "relayed-by: steward (writer peer:o)", "relayed-by: steward (writer peer:o/a) x", "x relayed-by: steward (writer peer:o/a)"} {
+		if _, _, _, ok := ParseRelayedBy(bad); ok {
+			t.Errorf("%q must not parse", bad)
+		}
+	}
+	if FormatRelayedBy("a b", "o", "a") != "" {
+		t.Fatal("invalid role must yield empty")
+	}
+}

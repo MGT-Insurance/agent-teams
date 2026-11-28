@@ -150,7 +150,7 @@ assert_allow "case10-short-legit-comment" \
   'gh pr comment 12 --body "Nit: rename to fooBar"'
 
 # Case 10b: a real review reply that OPENS with a GitHub @mention followed by
-# prose. This is the corrected-predicate case: jbarneson replied exactly this
+# prose. This is the corrected-predicate case: a reviewer replied exactly this
 # shape on midgard #5203 ("@matt-evanoff Considered, declining. See the
 # code."), and an earlier draft of this guard's predicate false-positived on
 # it (any raw @-prefixed value denied, no mention carve-out). A mention has
