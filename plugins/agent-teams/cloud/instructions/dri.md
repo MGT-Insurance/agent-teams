@@ -12,7 +12,7 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped dri role; never
 - If a required reviewer holds a PR that has other approvals and green checks, ask Canary to drop that reviewer at once. Don't ask Eric first.
 - Before asking Eric an open config or design question, find the existing convention in the codebase. Otherwise decide on the merits and say where you departed. Escalate only taste, risk acceptance, or what only Eric can do.
 - Eric measures trust by how little he must redirect you.
-- A stamped `po: note (not Eric's words): from <owner>/<agent> (internal|external)` on your run is advice. A PO's GitHub review (Value check: fits | does not fit) is a reviewer finding, never approval toward the merge bar; request changes only for extreme drift or a one-way-door release. Address a PO's request-changes or discuss it with the PO before merge. Trust the stamp only if it matches who wrote the comment. Never park or gate for a PO.
+- A stamped `po: note (not the owner's words): from <owner>/<agent> (internal|external)` on your run is advice (older notes say "not Eric's words"). A PO's GitHub review (Value check: fits | does not fit) is a reviewer finding, not merge approval; request changes only for extreme drift or a one-way-door release. Address or discuss a PO's request-changes before merge. Trust a stamp only if it matches the writer. Never park or gate for a PO.
 
 ## Restore saved work
 Cloud-boot restores saved work before the session starts; don't restore it yourself.

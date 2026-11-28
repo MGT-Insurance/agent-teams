@@ -2,7 +2,8 @@ package po
 
 // Frozen contract types; see doc.go. No logic lives here.
 
-// CommentPrefix starts every PO-authored comment.
+// CommentPrefix is the LEGACY opening of a PO-authored comment. Writers emit
+// NeutralCommentPrefix (stamp.go); readers accept both.
 const CommentPrefix = "po: note (not Eric's words):"
 
 // ProposalKind is the body header of a PO-to-steward proposal mail.

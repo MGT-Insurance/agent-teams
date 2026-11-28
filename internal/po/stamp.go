@@ -8,18 +8,19 @@ import (
 // Stamp line contract (doc.go item 8). Every PO note, review body and relayed
 // note opens with one stamp line naming its writer:
 //
-//	po: note (not Eric's words): from <owner>/<agent> (internal|external)
+//	po: note (not the owner's words): from <owner>/<agent> (internal|external)
 //
-// The stamp starts with CommentPrefix, so every reader that only checks the
-// old opening words still matches. A note without a stamp is a legacy note:
-// still recognised by its prefix, source unknown.
+// The stamp starts with NeutralCommentPrefix. Readers also accept the legacy
+// CommentPrefix ("not Eric's words"), which writers no longer emit. A note
+// without a stamp is a legacy note: still recognised by its prefix, source
+// unknown.
 const (
 	// StampKindInternal and StampKindExternal are the two writer kinds.
 	StampKindInternal = "internal"
 	StampKindExternal = "external"
 
 	// NeutralCommentPrefix is the owner-neutral opening of a PO note. Readers
-	// accept it alongside CommentPrefix; writers still emit CommentPrefix.
+	// Writers emit it; readers accept it alongside the legacy CommentPrefix.
 	NeutralCommentPrefix = "po: note (not the owner's words):"
 
 	// RelayedByPrefix starts the LAST line the steward adds when it copies an
@@ -59,7 +60,7 @@ func FormatStamp(owner, agent string, external bool) string {
 	if external {
 		kind = StampKindExternal
 	}
-	return CommentPrefix + stampFrom + owner + "/" + agent + " (" + kind + ")"
+	return NeutralCommentPrefix + stampFrom + owner + "/" + agent + " (" + kind + ")"
 }
 
 // ParseStamp parses a single stamp line (no trailing newline). ok is false for

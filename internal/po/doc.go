@@ -77,7 +77,9 @@
 //
 // Every PO-authored comment on an initiative or PR starts with exactly:
 //
-//	po: note (not Eric's words):
+//	po: note (not the owner's words):
+//
+// Readers also accept the legacy "po: note (not Eric's words):" (CommentPrefix).
 //
 // # 5. Command group (internal/verbs/po_kong.go)
 //
@@ -109,10 +111,10 @@
 // writer (see stamp.go; FormatStamp and ParseStamp are the only writer and
 // reader):
 //
-//	po: note (not Eric's words): from <owner>/<agent> (internal|external)
+//	po: note (not the owner's words): from <owner>/<agent> (internal|external)
 //
-// It starts with CommentPrefix byte for byte, so readers that check only the
-// old opening words still match, and a note with no stamp (the bare prefix) is
+// It starts with NeutralCommentPrefix byte for byte; readers also accept the
+// legacy CommentPrefix ("not Eric's words"). A note with no stamp (the bare prefix) is
 // a legacy note whose source is unknown: ParseStamp returns ok=false, never an
 // error. <owner> is the Dispatcher handle and <agent> the agent name; each is
 // lowercase alphanumeric tokens joined by "." or "-". A relayed external note

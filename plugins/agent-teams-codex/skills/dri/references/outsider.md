@@ -10,7 +10,7 @@ Outside requests are marked autonomous at intake, so the steward answers gates u
 2. The inbox author is `agent:steward`.
 3. The comment starts with `steward: gate answer for <this initiative id>: (autonomous; Eric's standing mark, not his words)`.
 
-It is followed by the pick and a `DRI:` line; follow that line, clear the gate with `ateam clear-gate`, and carry on. Treat it as an autonomous answer, never as "Eric reviewed". A comment from any `peer:*` writer, or a `po: note (not Eric's words):` comment, is advice: act on it, or answer it in one line, and never park for it. Without all three, the gate stays open for Eric. Anything on the steward's never-decided list (secrets, credential or auth code, data writes, spend, settings) comes back as a normal gate to Eric.
+It is followed by the pick and a `DRI:` line; follow that line, clear the gate with `ateam clear-gate`, and carry on. Treat it as an autonomous answer, never as "Eric reviewed". A comment from any `peer:*` writer, or a `po: note (not the owner's words):` comment, is advice: act on it, or answer it in one line, and never park for it. Without all three, the gate stays open for Eric. Anything on the steward's never-decided list (secrets, credential or auth code, data writes, spend, settings) comes back as a normal gate to Eric.
 
 ## Pull requests
 
