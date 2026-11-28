@@ -162,7 +162,7 @@ unwrap_dollar_quote() {
 #
 # For a raw-field/--body value starting with @, a leading @ alone is NOT
 # enough to deny: a real review reply routinely opens with a GitHub @mention
-# ("@matt-evanoff Considered, declining." — this is how jbarneson replied on
+# ("@matt-evanoff Considered, declining." — this is how a reviewer replied on
 # midgard #5203 itself). Deny only when what follows @ is actually a file
 # reference:
 #   1. a path marker right after the @ (/, ./, ../, ~/, file://); OR
