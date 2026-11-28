@@ -42,6 +42,12 @@ func TestNewRejectsBadOutsiderFields(t *testing.T) {
 		{Requester: "-eric/steward"},
 		{Requester: "eric/st-.eward"},
 		{Request: "a\nb"},
+		{Reviewer: "some-user"},
+		{Origin: "outsider", Reviewer: "-bad"},
+		{Origin: "outsider", Reviewer: "bad-"},
+		{Origin: "outsider", Reviewer: "ba--d"},
+		{Origin: "outsider", Reviewer: "bad_user"},
+		{Origin: "outsider", Reviewer: "a1234567890123456789012345678901234567890"},
 	} {
 		if _, err := initiative.New(f); err == nil {
 			t.Errorf("New(%+v): want error", f)
@@ -76,5 +82,20 @@ func TestLegacyStewardApprovesLineIgnored(t *testing.T) {
 	f := initiative.Of(iss)
 	if f.Problem != "p" || f.Origin != "outsider" {
 		t.Errorf("Of = %+v", f)
+	}
+}
+
+func TestReviewerStored(t *testing.T) {
+	f := initiative.Fields{Problem: "p", Repo: "/r", Origin: "outsider", Requester: "joe/canary", Request: "at-q7k2", Reviewer: "Some-User9"}
+	plan, err := initiative.New(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := initiative.Of(bd.Issue{Description: plan.Description}); got.Reviewer != "Some-User9" {
+		t.Errorf("Reviewer = %q", got.Reviewer)
+	}
+	// Of never rejects stored data, even outside the outsider rules.
+	if got := initiative.Of(bd.Issue{Description: "reviewer: -weird-\n"}); got.Reviewer != "-weird-" {
+		t.Errorf("Of rejected stored reviewer: %q", got.Reviewer)
 	}
 }

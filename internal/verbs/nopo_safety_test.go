@@ -27,6 +27,8 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
+	"github.com/mgt-insurance/agent-teams/internal/po"
 )
 
 // noPOKeyMarkers are the hosted-store key prefixes the PO contract reserves
@@ -517,4 +519,109 @@ func noPOStripPoGroup(help string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// ── PO PR review stamp, reviewer field, PR context (agent-teams-9yj.20) ──────
+//
+// With no PO and no --reviewer, the PR context block and the outsider dispatch
+// flow must be what they were before the optional reviewer field existed. The
+// only agreed wording change is the legacy Review line (below).
+
+const noPOLegacyReviewLine = "Review: @jbarneson is required. PO value checks are product input, never approvals.\n"
+
+func TestNoPO_PRContextNonOutsiderHasNoReviewLine(t *testing.T) {
+	issue := bd.Issue{ID: "at-x", Description: prCtxBase + "pr: https://github.com/o/r/pull/7\n"}
+	got, err := runPRContext(t, issue, &prContextKong{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "<!-- a-team-context -->\nPart 1 of 1.\nThis PR: o/r#7.\n<!-- /a-team-context -->\n"
+	if got != want {
+		t.Errorf("non-outsider context = %q, want %q", got, want)
+	}
+	// A reviewer field on a non-outsider initiative is never rendered.
+	issue.Description += "reviewer: someone\n"
+	if got2, err := runPRContext(t, issue, &prContextKong{}); err != nil || got2 != want {
+		t.Errorf("non-outsider with reviewer field = %q (err %v), want %q", got2, err, want)
+	}
+}
+
+func TestNoPO_PRContextOutsiderWithoutReviewerIsLegacyLine(t *testing.T) {
+	issue := bd.Issue{ID: "at-x", Description: prCtxBase +
+		"origin: outsider\nrequester: joe/po-claims\nrequest: bd-9\npr: https://github.com/o/r/pull/7\n"}
+	got, err := runPRContext(t, issue, &prContextKong{})
+	if err != nil {
+		t.Fatalf("outsider with no reviewer must still work: %v", err)
+	}
+	want := "<!-- a-team-context -->\n" +
+		"Part 1 of 1 for the request bd-9 (asked by joe/po-claims).\n" +
+		"This PR: o/r#7.\n" +
+		noPOLegacyReviewLine +
+		"<!-- /a-team-context -->\n"
+	if got != want {
+		t.Errorf("outsider context = %q, want %q", got, want)
+	}
+}
+
+// TestNoPO_DispatchOutsiderRegisterOnlyNoReviewer: the outsider flow with no
+// --reviewer validates, registers, and records no reviewer.
+func TestNoPO_DispatchOutsiderRegisterOnlyNoReviewer(t *testing.T) {
+	h := registerOnlyHarness(t, registerOnlyConfig)
+	outsiderFlags(h.cmd)
+	if h.cmd.Reviewer != "" {
+		t.Fatal("harness must not set a reviewer")
+	}
+	if err := h.cmd.Validate(); err != nil {
+		t.Fatalf("Validate without --reviewer: %v", err)
+	}
+	if err := h.cmd.Run(h.ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	f := initiative.Of(bd.Issue{Description: h.createBody})
+	if f.Origin != "outsider" || f.Requester != "alice/helper-bot" || f.Request != "at-req1" || f.Reviewer != "" {
+		t.Errorf("fields = %+v", f)
+	}
+	if strings.Contains(h.createBody, "reviewer") {
+		t.Errorf("initiative body mentions a reviewer: %q", h.createBody)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(h.stdout.String()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parsed["reviewer"]; ok || len(parsed) != 7 {
+		t.Errorf("stdout = %q, want 7 keys and no reviewer", h.stdout.String())
+	}
+	h.assertNoDispatcherWork()
+}
+
+// TestNoPO_CommentPrefixAndLegacyNote pins the PO comment prefix byte for byte
+// and that a legacy (bare-prefix) note is still recognised as a PO note.
+func TestNoPO_CommentPrefixAndLegacyNote(t *testing.T) {
+	if po.CommentPrefix != "po: note (not Eric's words):" {
+		t.Errorf("po.CommentPrefix changed: %q", po.CommentPrefix)
+	}
+	const prefix = "po: note (not Eric's words):"
+	for _, legacy := range []string{prefix, prefix + " consider the onboarding flow"} {
+		if _, _, _, ok := po.ParseStamp(legacy); ok {
+			t.Errorf("legacy note %q must parse as unknown source, not a stamp", legacy)
+		}
+	}
+	// A stamped note still starts with the old prefix, so old readers match it.
+	if got, want := po.FormatStamp("eric", "po-claims", false), prefix+" from eric/po-claims (internal)"; got != want {
+		t.Errorf("stamp = %q, want %q", got, want)
+	}
+}
+
+func TestNoPO_PRContextBadStoredReviewerFallsBackToLegacyLine(t *testing.T) {
+	for _, bad := range []string{"joe <!-- /a-team-context -->", "joe<b>", "-joe", "a b", strings.Repeat("a", 40)} {
+		issue := bd.Issue{ID: "at-x", Description: prCtxBase +
+			"origin: outsider\nrequester: joe/po-claims\nrequest: bd-9\nreviewer: " + bad + "\npr: https://github.com/o/r/pull/7\n"}
+		got, err := runPRContext(t, issue, &prContextKong{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got, noPOLegacyReviewLine) || strings.Contains(got, "is requested") {
+			t.Errorf("reviewer %q: want legacy line, got %q", bad, got)
+		}
+	}
 }

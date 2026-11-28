@@ -16,6 +16,17 @@ const OriginOutsider = "outsider"
 
 var requesterPattern = regexp.MustCompile(`^[a-z0-9]+([-.][a-z0-9]+)*/[a-z0-9]+([-.][a-z0-9]+)*$`)
 
+// reviewerPattern is GitHub's login shape: alphanumeric tokens joined by single
+// hyphens (so no leading, trailing, or doubled hyphen); length is checked apart.
+var reviewerPattern = regexp.MustCompile(`^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`)
+
+// ValidReviewer reports whether s has GitHub's login shape (the rule New
+// enforces on the reviewer field). Readers of stored data use it to refuse a
+// hand-edited value before rendering it.
+func ValidReviewer(s string) bool {
+	return len(s) <= 39 && reviewerPattern.MatchString(s)
+}
+
 // validateOutsiderFields is New's write-side check of the outsider fields.
 // Of stays lenient (it never rejects stored data).
 func validateOutsiderFields(f Fields) error {
@@ -27,6 +38,14 @@ func validateOutsiderFields(f Fields) error {
 	}
 	if strings.ContainsAny(f.Linear, " \t\r\n") {
 		return fmt.Errorf("initiative.New: linear must be a single issue key with no whitespace, got %q", f.Linear)
+	}
+	if f.Reviewer != "" {
+		if f.Origin != OriginOutsider {
+			return fmt.Errorf("initiative.New: reviewer is valid only with origin %q", OriginOutsider)
+		}
+		if !ValidReviewer(f.Reviewer) {
+			return fmt.Errorf("initiative.New: reviewer must be a GitHub login (alphanumeric or single hyphens, at most 39 chars, no leading or trailing hyphen), got %q", f.Reviewer)
+		}
 	}
 	return nil
 }

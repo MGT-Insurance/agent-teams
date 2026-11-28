@@ -478,6 +478,7 @@ func (c *dispatchKong) applyOutsider(f *initiative.Fields) {
 	f.Requester = c.Requester
 	f.Request = c.Request
 	f.Linear = c.Linear
+	f.Reviewer = c.Reviewer
 }
 
 // resolveRegisterOnlyHome returns the hosted workspace a register-only

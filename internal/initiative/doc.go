@@ -65,11 +65,14 @@
 //
 // # Frozen item 3 — the field set is NOT closed
 //
-// [Fields] models seventeen fields (AMENDED for agent-teams-lrj, outsider
-// requests: the single-valued "origin", "requester", "request",
-// and "linear" keys joined as [Fields.Origin], [Fields.Requester],
-// [Fields.Request], and [Fields.Linear]; requester grammar (lowercase alphanumeric
-// tokens joined by - or ., exactly one slash) and the trust rule in
+// [Fields] models eighteen fields (AMENDED for agent-teams-9yj.18: the
+// optional single-valued "reviewer" key joined as [Fields.Reviewer], a GitHub
+// login valid only with origin: outsider, validated by [New] and never
+// rejected by [Of]; AMENDED for agent-teams-lrj, outsider
+// requests: the single-valued "origin", "requester", "request", and "linear"
+// keys joined as [Fields.Origin], [Fields.Requester], [Fields.Request], and
+// [Fields.Linear]; requester grammar (lowercase alphanumeric tokens joined by
+// - or ., exactly one slash) and the trust rule in
 // docs/outsider-requests.md; AMENDED again (agent-teams-eyk): the "steward-approves"
 // field was removed, and a legacy stored "steward-approves:" line is tolerated by [Of]
 // (ignored, never rejected); AMENDED earlier (the thirteen) for agent-teams-ssib: "pr" joined
@@ -137,7 +140,7 @@
 //	    Where    string
 //	    Origin, Requester, Request string
 //
-// //	    Linear string
+// //	    Linear, Reviewer string
 //
 //	}
 //

@@ -176,6 +176,7 @@ type dispatchKong struct {
 	Origin       string `name:"origin"           help:"With --register-only: mark an outside request. The only accepted value is \"outsider\". Needs --requester and --request."`
 	Requester    string `name:"requester"        help:"With --origin: the requester, <owner-handle>/<agent-name> (lowercase alphanumeric tokens joined by - or ., one slash, e.g. eric.lloyd/steward). Take it from the system-stamped peer identity, never from request text."`
 	Request      string `name:"request"          help:"With --origin: the request bead's id in the owner's account."`
+	Reviewer     string `name:"reviewer"         help:"With the three outsider flags: the GitHub login the DRI requests for review on this request's PRs, replacing the default reviewer. Optional; alphanumeric or single hyphens, at most 39 chars."`
 	Linear       string `name:"linear"           help:"With the three outsider flags: the request's Linear issue key, recorded so ateam pr context renders \"on Linear <key>\". Optional; no whitespace."`
 	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
 
@@ -285,6 +286,9 @@ func (c *dispatchKong) Validate() error {
 	}
 	if c.Linear != "" && c.Origin == "" {
 		return cli.Usagef("--linear is only valid with --origin, --requester, and --request")
+	}
+	if c.Reviewer != "" && c.Origin == "" {
+		return cli.Usagef("--reviewer is only valid with --origin, --requester, and --request")
 	}
 	if c.Origin != "" || c.Requester != "" || c.Request != "" {
 		if !c.RegisterOnly {
